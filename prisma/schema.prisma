@@ -1,0 +1,82 @@
+// Configuration du générateur pour le client Prisma
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Configuration de la base de données
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Modèle Utilisateur
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  password      String?   // Nullable pour permettre l'authentification OAuth (Google/GitHub)
+  name          String?
+  emailVerified DateTime?
+  image         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  // Relations
+  bookmarks     Bookmark[]
+  accounts      Account[]
+  sessions      Session[]
+}
+
+// Modèle pour les favoris/marque-pages
+model Bookmark {
+  id        String   @id @default(cuid())
+  title     String
+  link      String
+  snippet   String?
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+// Modèle pour les comptes OAuth (NextAuth)
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+// Modèle pour les sessions (NextAuth)
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// Modèle pour les jetons de vérification
+model VerificationToken {
+  id         String   @id @default(cuid())
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
