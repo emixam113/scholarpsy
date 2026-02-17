@@ -85,7 +85,7 @@ export default function Home() {
 						{/* Navigation centrale */}
 						<nav className="hidden md:flex items-center gap-8">
 							<Link href="/search" className="text-slate-600 hover:text-blue-600 font-bold text-sm transition-colors">EXPLORER</Link>
-							<Link href="/bookmarks" className="text-slate-600 hover:text-blue-600 font-bold text-sm transition-colors">MA BIBLIOTHÈQUE</Link>
+							<Link href="/library" className="text-slate-600 hover:text-blue-600 font-bold text-sm transition-colors">MA BIBLIOTHÈQUE</Link>
 						</nav>
 
 						{/* Actions Utilisateur */}

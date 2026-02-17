@@ -1,12 +1,13 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, Suspense } from "react";
 import { signIn } from "next-auth/react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { Mail, Lock, ArrowRight, Loader2, ShieldCheck } from "lucide-react";
 
-export default function LoginPage() {
+// ✅ Composant séparé pour useSearchParams
+function LoginForm() {
 	const [email, setEmail] = useState("");
 	const [password, setPassword] = useState("");
 	const [error, setError] = useState("");
@@ -45,19 +46,16 @@ export default function LoginPage() {
 
 	return (
 		<div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-purple-50 flex items-center justify-center p-4">
-			{/* Background decoration */}
 			<div className="fixed inset-0 bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-blue-100 via-transparent to-purple-100 opacity-40 pointer-events-none" />
 
 			<div className="relative w-full max-w-md">
-				{/* Logo / Retour Accueil */}
 				<div className="text-center mb-8">
-					<Link href="/" className="inline-flex items-center gap-2">
+					<Link href="/" className="inline-flex items-center gap-3">
 						<div className="w-10 h-10 bg-gradient-to-br from-blue-600 to-purple-600 rounded-xl flex items-center justify-center shadow-lg">
-							<span className="text-white font-bold text-xl">S</span>
+							<img src="/scholarpsy.jpg" />
 						</div>
-						<span className="text-2xl font-bold bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">
-              ScholarPsy
-            </span>
+						<img src="/scholarpsy.jpg" alt="scholarpsy" />
+						ScholarPsy
 					</Link>
 				</div>
 
@@ -74,7 +72,6 @@ export default function LoginPage() {
 								{success}
 							</div>
 						)}
-
 						{error && (
 							<div className="p-3 text-sm text-red-600 bg-red-50 border border-red-100 rounded-xl font-medium">
 								{error}
@@ -99,16 +96,15 @@ export default function LoginPage() {
 						<div className="space-y-2">
 							<div className="flex justify-between items-center ml-1">
 								<label className="text-sm font-semibold text-slate-700">Mot de passe</label>
-
 							</div>
 							<div className="relative group">
-								<Lock className="absolute left-3 top-()z1/1-translate-y-1/2 w-5 h-5 text-slate-400 group-focus-within:text-blue-600 transition-colors" />
+								<Lock className="absolute left-3 top-3 w-5 h-5 text-slate-400 group-focus-within:text-blue-600 transition-colors" />
 								<input
 									type="password"
 									value={password}
 									onChange={(e) => setPassword(e.target.value)}
 									className="w-full pl-11 text-black pr-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
-									placeholder="••••••••"
+									placeholder="mot de passe"
 									required
 								/>
 								<a href="#" className="text-xs text-blue-600 hover:underline">Mot de passe oublié ?</a>
@@ -142,5 +138,14 @@ export default function LoginPage() {
 				</div>
 			</div>
 		</div>
+	);
+}
+
+// ✅ Page principale avec Suspense obligatoire pour useSearchParams
+export default function LoginPage() {
+	return (
+		<Suspense fallback={<div className="min-h-screen flex items-center justify-center">Chargement...</div>}>
+			<LoginForm />
+		</Suspense>
 	);
 }

@@ -1,177 +1,260 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import { useSearchParams, useRouter } from 'next/navigation';
-import { Search, ArrowLeft, ExternalLink, BookmarkPlus, Download } from 'lucide-react';
-import Link from 'next/link';
+import { useState, useEffect, useCallback, Suspense } from 'react';
+import { useSession } from 'next-auth/react';
+import { useSearchParams } from 'next/navigation';
+import { Search, ExternalLink, Bookmark, Loader2, BookmarkCheck, Undo2 } from 'lucide-react';
+import toast from 'react-hot-toast';
+import { debounce } from 'lodash';
+import { z } from 'zod';
 
-interface SearchResult {
-	title: string;
-	link: string;
-	snippet: string;
-	publication_info?: {
-		summary: string;
-	};
-	inline_links?: {
-		cited_by?: {
-			total: number;
-		};
-	};
-}
+const ArticleSchema = z.object({
+	title: z.string(),
+	link: z.string().url(),
+	snippet: z.string(),
+});
+type Article = z.infer<typeof ArticleSchema>;
 
-export default function SearchPage() {
+// ✅ Composant séparé pour useSearchParams
+function SearchContent() {
+	const { data: session } = useSession();
 	const searchParams = useSearchParams();
-	const router = useRouter();
-	const query = searchParams.get('q') || '';
-
-	const [results, setResults] = useState<SearchResult[]>([]);
+	const [query, setQuery] = useState(searchParams.get('q') || '');
+	const [results, setResults] = useState<Article[]>([]);
 	const [loading, setLoading] = useState(false);
-	const [error, setError] = useState('');
-	const [searchInput, setSearchInput] = useState(query);
+	const [savedArticles, setSavedArticles] = useState<Set<string>>(new Set());
+	const [viewedArticles, setViewedArticles] = useState<Set<string>>(new Set());
 
 	useEffect(() => {
-		if (query) {
-			performSearch(query);
+		if (session) {
+			fetch('/api/bookmarks')
+				.then(res => res.json())
+				.then(data => {
+					if (data.bookmarks) {
+						setSavedArticles(new Set(data.bookmarks.map((b: Article) => b.link)));
+					}
+				})
+				.catch(err => console.error('Error fetching bookmarks:', err));
+
+			fetch('/api/history')
+				.then(res => res.json())
+				.then(data => {
+					if (data.history) {
+						setViewedArticles(new Set(data.history.map((h: Article) => h.link)));
+					}
+				})
+				.catch(err => console.error('Error fetching history:', err));
 		}
-	}, [query]);
+	}, [session]);
 
-	const performSearch = async (searchQuery: string) => {
-		setLoading(true);
-		setError('');
-		try {
-			const response = await fetch(`/api/search?q=${encodeURIComponent(searchQuery)}`);
-			const data = await response.json();
-
-			if (data.success) {
-				setResults(data.results);
-			} else {
-				setError(data.error || 'Une erreur est survenue');
+	const debouncedSearch = useCallback(
+		debounce(async (q: string) => {
+			if (!q.trim()) return;
+			setLoading(true);
+			try {
+				const res = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
+				const data = await res.json();
+				if (data.success) {
+					const validatedResults = z.array(ArticleSchema).parse(data.results);
+					const filteredResults = validatedResults.filter(
+						(result: Article) => !viewedArticles.has(result.link)
+					);
+					setResults(filteredResults);
+				}
+			} catch (error) {
+				console.error('Erreur recherche:', error);
+				toast.error('Une erreur est survenue lors de la recherche.');
+			} finally {
+				setLoading(false);
 			}
-		} catch (err) {
-			setError('Impossible de récupérer les résultats');
-		} finally {
-			setLoading(false);
+		}, 500),
+		[viewedArticles]
+	);
+
+	useEffect(() => {
+		const q = searchParams.get('q');
+		if (q) {
+			setQuery(q);
+			debouncedSearch(q);
+		}
+		return () => debouncedSearch.cancel();
+	}, [searchParams, debouncedSearch]);
+
+	const trackVisit = async (article: Article) => {
+		if (!session) return;
+		try {
+			await fetch('/api/history', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(article),
+			});
+			setViewedArticles(prev => new Set(prev).add(article.link));
+		} catch (error) {
+			console.error('Erreur tracking:', error);
+			toast.error("Erreur lors de l'enregistrement de la visite.");
 		}
 	};
 
-	const handleSearch = (e: React.FormEvent) => {
-		e.preventDefault();
-		if (searchInput.trim()) {
-			router.push(`/search?q=${encodeURIComponent(searchInput)}`);
+	const saveBookmark = async (article: Article) => {
+		if (!session) {
+			toast.error('Vous devez être connecté pour sauvegarder des articles');
+			return;
 		}
+		try {
+			const res = await fetch('/api/bookmarks', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(article),
+			});
+			const data = await res.json();
+			if (data.success) {
+				setSavedArticles(prev => new Set(prev).add(article.link));
+				toast.success('Article sauvegardé !');
+			}
+		} catch (error) {
+			console.error('Erreur sauvegarde:', error);
+			toast.error('Erreur lors de la sauvegarde.');
+		}
+	};
+
+	const resetArticle = async (link: string) => {
+		try {
+			const res = await fetch('/api/history', {
+				method: 'PATCH',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ link }),
+			});
+			const data = await res.json();
+			if (data.success) {
+				setViewedArticles(prev => {
+					const newSet = new Set(prev);
+					newSet.delete(link);
+					return newSet;
+				});
+				toast.success('Article réinitialisé.');
+			}
+		} catch (error) {
+			console.error('Erreur réinitialisation:', error);
+			toast.error('Erreur lors de la réinitialisation.');
+		}
+	};
+
+	const handleSearch = (e?: React.FormEvent) => {
+		if (e) e.preventDefault();
+		debouncedSearch(query);
 	};
 
 	return (
 		<div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-purple-50">
-			<header className="sticky top-0 z-50 backdrop-blur-xl bg-white/70 border-b border-white/20 shadow-sm">
-				<div className="container mx-auto px-4 lg:px-8 py-4">
-					<div className="flex items-center gap-4">
-						<Link href="/" className="flex items-center gap-2 text-slate-600 hover:text-slate-900 transition-colors">
-							<ArrowLeft className="w-5 h-5" />
-							<span className="font-medium">Retour</span>
-						</Link>
+			<div className="fixed inset-0 bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-blue-100 via-transparent to-purple-100 opacity-40 pointer-events-none" />
 
-						<form onSubmit={handleSearch} className="flex-1 max-w-2xl">
-							<div className="flex items-center bg-white rounded-xl shadow-md overflow-hidden border border-slate-200">
-								<Search className="w-5 h-5 text-slate-400 ml-4" />
-								<input
-									type="text"
-									value={searchInput}
-									onChange={(e) => setSearchInput(e.target.value)}
-									placeholder="Rechercher..."
-									className="flex-1 px-4 py-3 focus:outline-none text-slate-900"
-								/>
-								<button
-									type="submit"
-									className="px-6 py-3 bg-gradient-to-r from-blue-600 to-purple-600 text-white font-semibold hover:shadow-lg transition-all"
-								>
-									Rechercher
-								</button>
-							</div>
-						</form>
+			<div className="relative z-10 max-w-5xl mx-auto p-8 pt-20">
+				<form onSubmit={handleSearch} className="relative mb-12">
+					<div className="relative">
+						<Search className="absolute left-5 top-1/2 -translate-y-1/2 text-slate-400" size={22} />
+						<input
+							type="text"
+							value={query}
+							onChange={(e) => {
+								setQuery(e.target.value);
+								debouncedSearch(e.target.value);
+							}}
+							placeholder="Rechercher des articles en psychologie..."
+							className="w-full pl-14 pr-4 py-5 rounded-2xl border-2 border-slate-200 shadow-xl focus:ring-2 focus:ring-blue-500 outline-none font-medium text-slate-900 bg-white"
+						/>
 					</div>
-				</div>
-			</header>
+				</form>
 
-			<main className="container mx-auto px-4 lg:px-8 py-8">
-				{loading && (
+				{loading ? (
 					<div className="text-center py-20">
-						<div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
-						<p className="mt-4 text-slate-600">Recherche en cours...</p>
+						<Loader2 className="w-12 h-12 animate-spin text-blue-600 mx-auto mb-4" />
+						<p className="text-slate-600 font-medium">Recherche en cours...</p>
 					</div>
-				)}
-
-				{error && (
-					<div className="max-w-2xl mx-auto bg-red-50 border border-red-200 rounded-xl p-6 text-center">
-						<p className="text-red-600 font-medium">{error}</p>
+				) : results.length === 0 ? (
+					<div className="text-center py-20">
+						<p className="text-slate-600 font-medium">
+							{viewedArticles.size > 0 && query.trim()
+								? `Tous les résultats pour "${query}" ont déjà été consultés.`
+								: `Aucun résultat trouvé pour "${query}".`}
+						</p>
+						<p className="text-slate-500 mt-2">
+							{viewedArticles.size > 0 && query.trim()
+								? 'Tu peux réinitialiser des articles depuis ton historique ou essayer une nouvelle recherche.'
+								: "Essaie avec d'autres mots-clés ou vérifie l'orthographe."}
+						</p>
 					</div>
-				)}
+				) : (
+					<div className="space-y-6">
+						{results.map((result, index) => {
+							const isSaved = savedArticles.has(result.link);
+							const isViewed = viewedArticles.has(result.link);
+							return (
+								<article
+									key={index}
+									className="bg-white p-8 rounded-3xl shadow-sm border-2 border-slate-100 hover:shadow-xl hover:border-blue-200 transition-all"
+								>
+									<h3 className="text-2xl font-black text-slate-900 mb-3 leading-tight">
+										{result.title}
+									</h3>
+									<p className="text-slate-600 mb-6 leading-relaxed">{result.snippet}</p>
 
-				{!loading && !error && results.length === 0 && query && (
-					<div className="max-w-2xl mx-auto bg-white rounded-xl p-12 text-center shadow-sm">
-						<p className="text-slate-600 text-lg">Aucun résultat trouvé pour "{query}"</p>
-					</div>
-				)}
-
-				{!loading && results.length > 0 && (
-					<div className="max-w-4xl mx-auto space-y-6">
-						<div className="text-slate-600 mb-6">
-							Environ {results.length} résultats pour <span className="font-semibold text-slate-900">"{query}"</span>
-						</div>
-
-						{results.map((result, index) => (
-							<div key={index} className="bg-white rounded-xl p-6 shadow-sm hover:shadow-lg transition-all border border-slate-100">
-								<div className="flex items-start justify-between gap-4">
-									<div className="flex-1">
+									<div className="flex gap-4 items-center">
 										<a
 											href={result.link}
 											target="_blank"
 											rel="noopener noreferrer"
-											className="text-xl font-semibold text-blue-600 hover:text-blue-700 hover:underline mb-2 block"
+											onClick={() => trackVisit(result)}
+											className="inline-flex items-center gap-2 px-5 py-3 bg-slate-900 text-white rounded-xl font-black hover:bg-slate-800 transition-all shadow-md text-sm uppercase tracking-wide"
 										>
-											{result.title}
+											<ExternalLink size={16} /> Consulter l&apos;article
 										</a>
 
-										{result.publication_info?.summary && (
-											<p className="text-sm text-green-700 mb-2">
-												{result.publication_info.summary}
-											</p>
-										)}
-
-										<p className="text-slate-600 mb-3">{result.snippet}</p>
-
-										<div className="flex items-center gap-4 text-sm">
-											{result.inline_links?.cited_by?.total && (
-												<span className="text-slate-500">
-                          Cité {result.inline_links.cited_by.total} fois
-                        </span>
+										<button
+											onClick={() => saveBookmark(result)}
+											disabled={isSaved}
+											className={`inline-flex items-center gap-2 px-5 py-3 rounded-xl font-bold transition-all text-sm ${
+												isSaved
+													? 'bg-green-50 text-green-600 border-2 border-green-200'
+													: 'bg-slate-50 text-slate-600 hover:bg-yellow-50 hover:text-yellow-600 border-2 border-slate-200'
+											}`}
+										>
+											{isSaved ? (
+												<><BookmarkCheck size={16} /> Sauvegardé</>
+											) : (
+												<><Bookmark size={16} /> Sauvegarder</>
 											)}
-											<a
-												href={result.link}
-												target="_blank"
-												rel="noopener noreferrer"
-												className="flex items-center gap-1 text-blue-600 hover:text-blue-700"
-											>
-												<ExternalLink className="w-4 h-4" />
-												Voir l'article
-											</a>
-										</div>
-									</div>
+										</button>
 
-									<div className="flex flex-col gap-2">
-										<button className="p-2 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors" title="Sauvegarder">
-											<BookmarkPlus className="w-5 h-5 text-slate-600" />
-										</button>
-										<button className="p-2 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors" title="Télécharger citation">
-											<Download className="w-5 h-5 text-slate-600" />
-										</button>
+										{isViewed && (
+											<button
+												onClick={() => resetArticle(result.link)}
+												className="text-sm text-slate-500 hover:text-slate-800 flex items-center gap-1"
+											>
+												<Undo2 size={14} /> Réinitialiser
+											</button>
+										)}
 									</div>
-								</div>
-							</div>
-						))}
+								</article>
+							);
+						})}
 					</div>
 				)}
-			</main>
+			</div>
 		</div>
+	);
+}
+
+// ✅ Page principale avec Suspense obligatoire pour useSearchParams
+export default function SearchPage() {
+	return (
+		<Suspense
+			fallback={
+				<div className="min-h-screen flex items-center justify-center">
+					<Loader2 className="w-12 h-12 animate-spin text-blue-600" />
+				</div>
+			}
+		>
+			<SearchContent />
+		</Suspense>
 	);
 }

@@ -13,7 +13,7 @@ datasource db {
 model User {
   id            String    @id @default(cuid())
   email         String    @unique
-  password      String?   // Nullable pour permettre l'authentification OAuth (Google/GitHub)
+  password      String? // Nullable pour permettre l'authentification OAuth (Google/GitHub)
   name          String?
   emailVerified DateTime?
   image         String?
@@ -21,9 +21,12 @@ model User {
   updatedAt     DateTime  @updatedAt
 
   // Relations
-  bookmarks     Bookmark[]
-  accounts      Account[]
-  sessions      Session[]
+  bookmarks Bookmark[]
+  history   ArticleHistory[]
+  accounts  Account[]
+  sessions  Session[]
+  Library   Library[]
+  Folder    Folder[]
 }
 
 // Modèle pour les favoris/marque-pages
@@ -37,6 +40,20 @@ model Bookmark {
   createdAt DateTime @default(now())
 
   @@index([userId])
+}
+
+// Modèle pour l'historique des articles visités
+model ArticleHistory {
+  id        String   @id @default(cuid())
+  title     String
+  link      String
+  snippet   String?
+  visitedAt DateTime @default(now())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([visitedAt])
 }
 
 // Modèle pour les comptes OAuth (NextAuth)
@@ -79,4 +96,28 @@ model VerificationToken {
   expires    DateTime
 
   @@unique([identifier, token])
+}
+
+model Library {
+  id       String   @id @default(cuid())
+  title    String
+  link     String
+  snippet  String?
+  userId   String
+  folderId String?
+  savedAt  DateTime @default(now())
+  folder   Folder?  @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, link])
+}
+
+model Folder {
+  id        String    @id @default(cuid())
+  name      String
+  color     String?
+  userId    String
+  createdAt DateTime  @default(now())
+  articles  Library[]
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 }

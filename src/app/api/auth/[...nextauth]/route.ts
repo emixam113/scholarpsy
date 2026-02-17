@@ -1,3 +1,4 @@
+// app/api/auth/[...nextauth]/route.ts
 import NextAuth from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
 import { prisma } from "@/lib/prisma";
@@ -12,37 +13,55 @@ const handler = NextAuth({
 				password: { label: "Mot de passe", type: "password" }
 			},
 			async authorize(credentials) {
+				console.log("--- Tentative de connexion ---");
+
 				if (!credentials?.email || !credentials?.password) {
-					throw new Error("Email et mot de passe requis");
+					console.error("Erreur : Email ou mot de passe manquant dans la requête");
+					return null;
 				}
 
-				//Chercher l'utilisateur dans PostgreSQL
-				const user = await prisma.user.findUnique({
-					where: { email: credentials.email }
-				});
+				try {
+					// 1. Chercher l'utilisateur dans PostgreSQL
+					const user = await prisma.user.findUnique({
+						where: { email: credentials.email }
+					});
 
-				if (!user || !user.password) {
-					throw new Error("Aucun utilisateur trouvé avec cet email");
+					if (!user) {
+						console.warn(`Échec : Aucun utilisateur trouvé pour l'email ${credentials.email}`);
+						return null; // Retourne null pour déclencher la 401 proprement
+					}
+
+					if (!user.password) {
+						console.warn("Échec : L'utilisateur n'a pas de mot de passe défini (compte via social login ?)");
+						return null;
+					}
+
+					// 2. Vérifier le mot de passe avec Argon2
+					console.log("Vérification du mot de passe avec Argon2...");
+					const isPasswordCorrect = await argon2.verify(user.password, credentials.password);
+
+					if (!isPasswordCorrect) {
+						console.warn("Échec : Mot de passe incorrect");
+						return null;
+					}
+
+					// 3. Succès
+					console.log("Connexion réussie pour :", user.email);
+					return {
+						id: user.id,
+						email: user.email,
+						name: user.name,
+					};
+
+				} catch (error) {
+					console.error("Erreur critique lors de l'autorisation :", error);
+					return null;
 				}
-
-				// Vérifier le mot de passe avec Argon2
-				const isPasswordCorrect = await argon2.verify(user.password, credentials.password);
-
-				if (!isPasswordCorrect) {
-					throw new Error("Mot de passe incorrect");
-				}
-
-				// Retourner l'utilisateur (sera stocké dans le JWT)
-				return {
-					id: user.id,
-					email: user.email,
-					name: user.name,
-				};
 			}
 		})
 	],
 	session: {
-		strategy: "jwt", // Utilisation des tokens JWT
+		strategy: "jwt",
 	},
 	callbacks: {
 		async jwt({ token, user }) {
@@ -52,7 +71,7 @@ const handler = NextAuth({
 			return token;
 		},
 		async session({ session, token }) {
-			if (session.user) {
+			if (session && session.user) {
 				(session.user as any).id = token.id;
 			}
 			return session;
@@ -62,6 +81,8 @@ const handler = NextAuth({
 	pages: {
 		signIn: "/login",
 	},
+	// Active les logs de debug de NextAuth lui-même
+	debug: process.env.NODE_ENV === "development",
 });
 
 export { handler as GET, handler as POST };
