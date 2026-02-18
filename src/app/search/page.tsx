@@ -39,8 +39,8 @@ function SearchContent() {
 			fetch('/api/history')
 				.then(res => res.json())
 				.then(data => {
-					if (data.history) {
-						setViewedArticles(new Set(data.history.map((h: Article) => h.link)));
+					if (data.data?.history) {
+						setViewedArticles(new Set(data.data.history.map((h: any) => h.link)));
 					}
 				})
 				.catch(err => console.error('Error fetching history:', err));
@@ -56,10 +56,7 @@ function SearchContent() {
 				const data = await res.json();
 				if (data.success) {
 					const validatedResults = z.array(ArticleSchema).parse(data.results);
-					const filteredResults = validatedResults.filter(
-						(result: Article) => !viewedArticles.has(result.link)
-					);
-					setResults(filteredResults);
+					setResults(validatedResults);
 				}
 			} catch (error) {
 				console.error('Erreur recherche:', error);
@@ -68,7 +65,7 @@ function SearchContent() {
 				setLoading(false);
 			}
 		}, 500),
-		[viewedArticles]
+		[]
 	);
 
 	useEffect(() => {
@@ -119,20 +116,21 @@ function SearchContent() {
 
 	const resetArticle = async (link: string) => {
 		try {
-			const res = await fetch('/api/history', {
-				method: 'PATCH',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ link }),
-			});
+			// Trouver l'id de l'entrée dans l'historique
+			const res = await fetch('/api/history');
 			const data = await res.json();
-			if (data.success) {
-				setViewedArticles(prev => {
-					const newSet = new Set(prev);
-					newSet.delete(link);
-					return newSet;
-				});
-				toast.success('Article réinitialisé.');
-			}
+			const entry = data.data?.history?.find((h: any) => h.link === link);
+
+			if (!entry) return;
+
+			await fetch(`/api/history?id=${entry.id}`, { method: 'DELETE' });
+
+			setViewedArticles(prev => {
+				const newSet = new Set(prev);
+				newSet.delete(link);
+				return newSet;
+			});
+			toast.success('Article réinitialisé.');
 		} catch (error) {
 			console.error('Erreur réinitialisation:', error);
 			toast.error('Erreur lors de la réinitialisation.');
@@ -173,15 +171,15 @@ function SearchContent() {
 				) : results.length === 0 ? (
 					<div className="text-center py-20">
 						<p className="text-slate-600 font-medium">
-							{viewedArticles.size > 0 && query.trim()
-								? `Tous les résultats pour "${query}" ont déjà été consultés.`
-								: `Aucun résultat trouvé pour "${query}".`}
+							{query.trim()
+								? `Aucun résultat trouvé pour "${query}".`
+								: 'Lancez une recherche pour trouver des articles.'}
 						</p>
-						<p className="text-slate-500 mt-2">
-							{viewedArticles.size > 0 && query.trim()
-								? 'Tu peux réinitialiser des articles depuis ton historique ou essayer une nouvelle recherche.'
-								: "Essaie avec d'autres mots-clés ou vérifie l'orthographe."}
-						</p>
+						{query.trim() && (
+							<p className="text-slate-500 mt-2">
+								Essaie avec d&apos;autres mots-clés ou vérifie l&apos;orthographe.
+							</p>
+						)}
 					</div>
 				) : (
 					<div className="space-y-6">
@@ -191,14 +189,35 @@ function SearchContent() {
 							return (
 								<article
 									key={index}
-									className="bg-white p-8 rounded-3xl shadow-sm border-2 border-slate-100 hover:shadow-xl hover:border-blue-200 transition-all"
+									className={`bg-white p-8 rounded-3xl shadow-sm border-2 transition-all ${
+										isViewed
+											? 'border-slate-300 opacity-75 hover:opacity-100 hover:shadow-md'
+											: 'border-slate-100 hover:shadow-xl hover:border-blue-200'
+									}`}
 								>
-									<h3 className="text-2xl font-black text-slate-900 mb-3 leading-tight">
-										{result.title}
-									</h3>
+									{/* Titre + Badge "Déjà consulté" */}
+									<div className="flex items-start justify-between mb-3">
+										<h3 className="text-2xl font-black text-slate-900 leading-tight flex-1">
+											{result.title}
+										</h3>
+										{isViewed && (
+											<span className="ml-3 mt-1 flex-shrink-0 inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-semibold bg-slate-100 text-slate-500 border border-slate-200">
+                        <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                          <path d="M10 12a2 2 0 100-4 2 2 0 000 4z" />
+                          <path
+	                          fillRule="evenodd"
+	                          d="M.458 10C1.732 5.943 5.522 3 10 3s8.268 2.943 9.542 7c-1.274 4.057-5.064 7-9.542 7S1.732 14.057.458 10zM14 10a4 4 0 11-8 0 4 4 0 018 0z"
+	                          clipRule="evenodd"
+                          />
+                        </svg>
+                        Déjà consulté
+                      </span>
+										)}
+									</div>
+
 									<p className="text-slate-600 mb-6 leading-relaxed">{result.snippet}</p>
 
-									<div className="flex gap-4 items-center">
+									<div className="flex gap-4 items-center flex-wrap">
 										<a
 											href={result.link}
 											target="_blank"
@@ -228,7 +247,7 @@ function SearchContent() {
 										{isViewed && (
 											<button
 												onClick={() => resetArticle(result.link)}
-												className="text-sm text-slate-500 hover:text-slate-800 flex items-center gap-1"
+												className="text-sm text-slate-500 hover:text-slate-800 flex items-center gap-1 transition-colors"
 											>
 												<Undo2 size={14} /> Réinitialiser
 											</button>
