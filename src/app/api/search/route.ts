@@ -1,122 +1,228 @@
 // src/app/api/search/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 
+// ─── Cache en mémoire ─────────────────────────────────────────────────────────
+const cache = new Map<string, { data: any; timestamp: number }>();
+const CACHE_TTL = 1000 * 60 * 15; // 15 minutes
+
+function getCacheKey(query: string, page: number, classic: boolean) {
+	return `${query.toLowerCase().trim()}_${page}_${classic}`;
+}
+
 // ─── Auteurs classiques en psychologie ───────────────────────────────────────
-// Si la query contient un de ces noms, on désactive le filtre de date
 const CLASSIC_AUTHORS = [
 	'bowlby', 'freud', 'piaget', 'vygotsky', 'winnicott', 'erikson',
 	'maslow', 'jung', 'skinner', 'pavlov', 'bandura', 'rogers',
 	'lacan', 'klein', 'ainsworth', 'bronfenbrenner', 'seligman',
-	'watzlawick', 'dolto', 'wallon', 'bion', 'kohut'
+	'watzlawick', 'dolto', 'wallon', 'bion', 'kohut', 'martinot'
 ];
 
-// ─── Détection de recherche classique ────────────────────────────────────────
 function isClassicSearch(query: string): boolean {
 	const q = query.toLowerCase();
-	// Contient un auteur classique
 	const hasClassicAuthor = CLASSIC_AUTHORS.some(author => q.includes(author));
-	// Contient une année ancienne explicite (ex: "1969", "1950")
 	const hasOldYear = /\b(19[0-7][0-9]|198[0-5])\b/.test(q);
-	// Contient des mots-clés de théorie fondamentale
 	const hasTheoryKeyword = /(théorie|theory|modèle|model|concept|paradigme)/.test(q);
-
 	return hasClassicAuthor || hasOldYear || hasTheoryKeyword;
 }
 
-// ─── Construction de la query SerpAPI ───────────────────────────────────────
-function buildScholarQuery(query: string, isClassic: boolean): string {
-	if (isClassic) {
-		// Pour les références classiques : pas de filtre de site ni de PDF
-		// On cherche sur Google Scholar directement sans restriction
-		return query;
-	}
+// ─── Semantic Scholar ─────────────────────────────────────────────────────────
+async function searchSemanticScholar(query: string, classic: boolean, limit: number, offset: number) {
+	try {
+		const url = new URL('https://api.semanticscholar.org/graph/v1/paper/search');
+		url.searchParams.append('query', query);
+		url.searchParams.append('limit', String(limit));
+		url.searchParams.append('offset', String(offset));
+		url.searchParams.append(
+			'fields',
+			'paperId,title,abstract,url,year,authors,citationCount,openAccessPdf,publicationTypes,publicationDate,journal,tldr'
+		);
 
-	// Pour les recherches récentes : on cible les bases SHS francophones
-	// cairn.info exclu : articles payants
-	return `${query} (site:researchgate.net OR site:hal.science OR site:erudit.org OR site:scholar.google.com)`;
+		if (!classic) {
+			url.searchParams.append('year', '2018-');
+		}
+
+		const response = await fetch(url.toString(), {
+			headers: { 'Content-Type': 'application/json' },
+			next: { revalidate: 900 }, // Cache Next.js 15 min
+		});
+
+		if (!response.ok) {
+			console.error('Semantic Scholar error:', response.status);
+			return [];
+		}
+
+		const data = await response.json();
+		if (!data.data || data.data.length === 0) return [];
+
+		return data.data.map((paper: any) => ({
+			paperId: paper.paperId,
+			title: paper.title || 'Sans titre',
+			link: paper.openAccessPdf?.url || paper.url || `https://www.semanticscholar.org/paper/${paper.paperId}`,
+			snippet: paper.tldr?.text || paper.abstract || '',
+			abstract: paper.abstract || '',
+			authors: paper.authors?.map((a: any) => a.name).join(', ') || '',
+			year: paper.year || null,
+			journal: paper.journal?.name || null,
+			pdfLink: paper.openAccessPdf?.url || null,
+			isFullText: !!paper.openAccessPdf?.url,
+			citedBy: paper.citationCount || 0,
+			source: 'Semantic Scholar',
+			isClassic: classic,
+		}));
+	} catch (error) {
+		console.error('Semantic Scholar fetch error:', error);
+		return [];
+	}
 }
 
+// ─── OpenAlex ────────────────────────────────────────────────────────────────
+async function searchOpenAlex(query: string, classic: boolean, limit: number, page: number) {
+	try {
+		const url = new URL('https://api.openalex.org/works');
+		url.searchParams.append('search', query);
+		url.searchParams.append('per-page', String(limit));
+		url.searchParams.append('page', String(page));
+		url.searchParams.append(
+			'select',
+			'id,title,abstract_inverted_index,publication_year,authorships,cited_by_count,open_access,doi,primary_location,type'
+		);
+		// Filtre de date uniquement, sans filtre concept qui cause des 400
+		if (!classic) {
+			url.searchParams.append('filter', 'publication_year:>2017');
+		}
+		url.searchParams.append('mailto', 'contact@scholarpsy.fr');
+
+		const response = await fetch(url.toString(), {
+			headers: { 'Content-Type': 'application/json' },
+			next: { revalidate: 900 }, // Cache Next.js 15 min
+		});
+
+		if (!response.ok) {
+			console.error('OpenAlex error:', response.status);
+			return [];
+		}
+
+		const data = await response.json();
+		if (!data.results || data.results.length === 0) return [];
+
+		return data.results.map((work: any) => {
+			let abstract = '';
+			if (work.abstract_inverted_index) {
+				const words: { [pos: number]: string } = {};
+				for (const [word, positions] of Object.entries(work.abstract_inverted_index as Record<string, number[]>)) {
+					for (const pos of positions) {
+						words[pos] = word;
+					}
+				}
+				abstract = Object.keys(words)
+					.sort((a, b) => Number(a) - Number(b))
+					.map(pos => words[Number(pos)])
+					.join(' ');
+			}
+
+			const authors = work.authorships?.map((a: any) => a.author?.display_name).filter(Boolean).join(', ') || '';
+			const pdfLink = work.open_access?.oa_url || null;
+			const link = pdfLink || (work.doi ? `https://doi.org/${work.doi}` : null) || work.primary_location?.landing_page_url || work.id;
+
+			return {
+				paperId: work.id,
+				title: work.title || 'Sans titre',
+				link,
+				snippet: abstract,
+				abstract,
+				authors,
+				year: work.publication_year || null,
+				journal: work.primary_location?.source?.display_name || null,
+				pdfLink,
+				isFullText: !!pdfLink,
+				citedBy: work.cited_by_count || 0,
+				source: 'OpenAlex',
+				isClassic: classic,
+			};
+		});
+	} catch (error) {
+		console.error('OpenAlex fetch error:', error);
+		return [];
+	}
+}
+
+// ─── Déduplication par titre ──────────────────────────────────────────────────
+function deduplicateResults(results: any[]) {
+	const seen = new Set<string>();
+	return results.filter(r => {
+		const key = r.title.toLowerCase().trim().slice(0, 60);
+		if (seen.has(key)) return false;
+		seen.add(key);
+		return true;
+	});
+}
+
+// ─── Handler principal ────────────────────────────────────────────────────────
 export async function GET(request: NextRequest) {
 	try {
-		const apiKey = process.env.SERPAPI_KEY;
 		const searchParams = request.nextUrl.searchParams;
 		const query = searchParams.get('q');
+		const page = parseInt(searchParams.get('page') || '1');
+		const limit = 8;
+		const offset = (page - 1) * limit;
 
 		if (!query) {
-			return NextResponse.json(
-				{ error: 'Query parameter is required' },
-				{ status: 400 }
-			);
+			return NextResponse.json({ error: 'Query parameter is required' }, { status: 400 });
 		}
 
 		const classic = isClassicSearch(query);
-		const scholarQuery = buildScholarQuery(query, classic);
+		const cacheKey = getCacheKey(query, page, classic);
 
-		const url = new URL('https://serpapi.com/search');
-		url.searchParams.append('engine', 'google_scholar');
-		url.searchParams.append('q', scholarQuery);
-		url.searchParams.append('api_key', apiKey!);
-		url.searchParams.append('hl', 'fr');
-		url.searchParams.append('num', '10'); // 10 résultats
-
-		// ✅ Filtre de date uniquement pour les recherches récentes
-		if (!classic) {
-			url.searchParams.append('as_ylo', '2018');
+		// ─── Vérification du cache ────────────────────────────────────────────
+		const cached = cache.get(cacheKey);
+		if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+			console.log('✅ Cache hit:', cacheKey);
+			return NextResponse.json({ ...cached.data, fromCache: true });
 		}
 
-		const response = await fetch(url.toString());
-		const data = await response.json();
+		console.log('🔍 Cache miss, fetching:', cacheKey);
 
-		if (!data.organic_results) {
-			return NextResponse.json({
-				success: true,
-				results: [],
-				count: 0,
-				searchType: classic ? 'classic' : 'recent',
-			});
-		}
+		// Lancer les deux APIs en parallèle
+		const [semanticResults, openAlexResults] = await Promise.all([
+			searchSemanticScholar(query, classic, limit, offset),
+			searchOpenAlex(query, classic, limit, page),
+		]);
 
-		// ─── Transformation et enrichissement des résultats ──────────────────────
-		const enhancedResults = data.organic_results.map((result: any) => ({
-			title: result.title,
-			link: result.link,
-			snippet: result.publication_info?.summary || result.snippet || '',
-			authors: result.publication_info?.authors
-				?.map((a: any) => a.name)
-				.join(', ') || '',
-			year: extractYear(result.publication_info?.summary),
-			pdfLink: result.resources?.[0]?.link || null,
-			isFullText: !!result.resources?.[0]?.link,
-			citedBy: result.inline_links?.cited_by?.total || 0,
-			source:
-				result.publication_info?.summary?.split('-')?.[1]?.trim() ||
-				'Source académique',
-			isClassic: classic,
-		}));
+		// Fusionner et dédupliquer
+		let merged = deduplicateResults([...semanticResults, ...openAlexResults]);
+		merged = merged.filter(r => r.title && r.link && r.link !== '#');
 
-		// ─── Tri : articles les plus cités en premier pour les classiques ─────────
+		// Tri pour les classiques : citations en premier
 		if (classic) {
-			enhancedResults.sort(
-				(a: any, b: any) => (b.citedBy || 0) - (a.citedBy || 0)
-			);
+			merged.sort((a, b) => (b.citedBy || 0) - (a.citedBy || 0));
 		}
 
-		return NextResponse.json({
+		const responseData = {
 			success: true,
-			results: enhancedResults,
-			count: data.search_information?.total_results,
+			results: merged,
+			count: merged.length,
+			page,
+			hasMore: merged.length >= limit,
 			searchType: classic ? 'classic' : 'recent',
-		});
+			sources: {
+				semanticScholar: semanticResults.length,
+				openAlex: openAlexResults.length,
+			},
+		};
+
+		// Mise en cache
+		cache.set(cacheKey, { data: responseData, timestamp: Date.now() });
+
+		// Nettoyage du cache si trop grand
+		if (cache.size > 200) {
+			const firstKey = cache.keys().next().value;
+			if (firstKey) cache.delete(firstKey);
+		}
+
+		return NextResponse.json(responseData);
 
 	} catch (error: any) {
 		console.error('Search error:', error);
 		return NextResponse.json({ error: 'Search failed' }, { status: 500 });
 	}
-}
-
-// ─── Utilitaire : extraire l'année depuis le résumé de publication ────────────
-function extractYear(summary?: string): number | null {
-	if (!summary) return null;
-	const match = summary.match(/\b(19|20)\d{2}\b/);
-	return match ? parseInt(match[0]) : null;
 }

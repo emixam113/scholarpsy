@@ -121,3 +121,11 @@ model Folder {
   articles  Library[]
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
+
+model PasswordResetToken {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  email     String
+  expires   DateTime
+  createdAt DateTime @default(now())
+}
